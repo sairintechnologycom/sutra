@@ -30,15 +30,21 @@
       "npm test",
       "npm run test",
       "npm run lint",
+      "npm run build",
       "pnpm test",
       "pnpm lint",
+      "pnpm build",
       "yarn test",
       "yarn lint",
+      "yarn build",
+      "docker-compose",
+      "docker compose",
       "git diff",
       "git status",
       "test ",
       "grep ",
-      "ls "
+      "ls ",
+      "cat "
     ],
     "deny_command_patterns": [
       "rm -rf",

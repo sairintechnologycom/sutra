@@ -440,18 +440,6 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
     ok, msg = get_version(planner_cmd)
     checks.append((f"{engine} CLI", ok, msg))
     
-    # API Key checks
-    if engine == "gemini":
-        gemini_key = os.environ.get("GOOGLE_API_KEY")
-        checks.append(("GOOGLE_API_KEY", bool(gemini_key), "found" if gemini_key else "MISSING"))
-    elif engine == "codex":
-        # Codex might use different keys depending on implementation, but usually it's OpenAI or similar.
-        # For now, let's assume it's part of the CLI auth.
-        pass
-
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-    checks.append(("ANTHROPIC_API_KEY", bool(anthropic_key), "found" if anthropic_key else "MISSING (optional for CLI, recommended for API)"))
-
     ok, msg = get_version(claude_cmd)
     checks.append(("Claude Code CLI", ok, msg))
     checks.append(("Sutra config", config_path().exists(), str(config_path())))
@@ -459,10 +447,19 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
     checks.append((".claude/settings.json", (cwd() / ".claude" / "settings.json").exists(), "Claude permissions"))
 
     if args.smoke_test:
-        ok, msg = planner_smoke(engine, cfg)
-        checks.append((f"{engine} headless smoke test", ok, msg or "ok"))
-        ok, msg = claude_smoke(cfg)
-        checks.append(("Claude headless smoke test", ok, msg or "ok"))
+        p_ok, p_msg = planner_smoke(engine, cfg)
+        checks.append((f"{engine} headless smoke test", p_ok, p_msg or "ok"))
+        if not p_ok and engine == "gemini":
+            gemini_key = os.environ.get("GOOGLE_API_KEY")
+            if not gemini_key:
+                checks.append(("GOOGLE_API_KEY", False, "MISSING (may be required for headless mode)"))
+
+        c_ok, c_msg = claude_smoke(cfg)
+        checks.append(("Claude headless smoke test", c_ok, c_msg or "ok"))
+        if not c_ok:
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+            if not anthropic_key:
+                checks.append(("ANTHROPIC_API_KEY", False, "MISSING (may be required for headless mode)"))
 
     all_ok = all(item[1] for item in checks)
     if not quiet:
