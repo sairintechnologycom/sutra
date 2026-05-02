@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 APP_DIR = ".sutra"
 RUNS_DIR = "runs"
 CONFIG_FILE = "config.json"
+VERSION = "0.3.0"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "default_engine": "codex",
@@ -420,6 +421,7 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
     claude_cmd = cfg["claude"].get("command", "claude")
 
     checks: List[Tuple[str, bool, str]] = []
+    checks.append(("Sutra CLI", True, VERSION))
     ok, msg = get_version(planner_cmd)
     checks.append((f"{engine} CLI", ok, msg))
     
@@ -1850,6 +1852,7 @@ class SutraArgumentParser(argparse.ArgumentParser):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = SutraArgumentParser(prog="sutra", description="Sutra: governed AI coding flow for Codex/Gemini and Claude Code")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
     sub._parser_class = SutraArgumentParser # Ensure sub-parsers use our custom class
 
