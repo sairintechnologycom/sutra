@@ -23,6 +23,14 @@ jobs:
           pip install build twine
       - name: Build package
         run: python -m build
+      - name: Verify Version Consistency
+        run: |
+          PYTHON_VERSION=$(python -c 'from sutra_cli.main import VERSION; print(f"v{VERSION}")')
+          TAG_VERSION=${{ github.ref_name }}
+          if [ "$PYTHON_VERSION" != "$TAG_VERSION" ]; then
+            echo "Error: Version in sutra_cli/main.py ($PYTHON_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
