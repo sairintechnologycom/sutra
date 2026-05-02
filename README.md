@@ -21,15 +21,41 @@ It is intentionally lightweight: a local Python CLI that can be installed direct
 
 ---
 
-## Install
+## Installation
 
-From this folder:
+### Option 1: From PyPI (Recommended)
+Install the standalone tool globally using `pipx`:
 
 ```bash
-python -m pip install -e . --no-build-isolation
+pipx install sutra-cli
 ```
 
-Verify:
+Or using standard `pip`:
+
+```bash
+python -m pip install sutra-cli
+```
+
+### Option 2: Standalone Binary
+Download the pre-compiled binary for your operating system from the [Latest Releases](https://github.com/sairintechnologycom/sutra/releases) page. No Python installation is required.
+
+### Option 3: From GitHub Source
+Install the latest development version directly from the repository:
+
+```bash
+pipx install git+https://github.com/sairintechnologycom/sutra.git
+```
+
+### Option 4: Local Development
+If you are contributing to Sutra, install it in editable mode:
+
+```bash
+git clone https://github.com/sairintechnologycom/sutra.git
+cd code_orchestrator
+python -m pip install -e .
+```
+
+Verify the installation:
 
 ```bash
 sutra --help

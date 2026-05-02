@@ -32,6 +32,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "planner_timeout_seconds": 120,
         "allow_local_fallback": True,
     },
+    "git": {
+        "auto_branch": True,
+        "auto_commit": True,
+        "branch_prefix": "sutra/",
+    },
     "policy": {
         "require_confirmation_before_run": True,
         "max_timeout_seconds": 1800,
@@ -135,6 +140,14 @@ def command_exists(command: str) -> bool:
     return shutil.which(command) is not None
 
 
+def is_git_repo() -> bool:
+    try:
+        cp = subprocess.run(["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True, check=False)
+        return cp.returncode == 0
+    except Exception:
+        return False
+
+
 def run_command(
     args: List[str],
     *,
@@ -158,27 +171,56 @@ def extract_json_blob(text: str) -> Optional[Any]:
     text = text.strip()
     if not text:
         return None
+    
+    # Try direct parse.
     try:
         return json.loads(text)
     except Exception:
         pass
 
+    # Look for JSON blocks ```json ... ```
+    match = re.search(r"```json\s+(.*?)\s+```", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(1))
+        except Exception:
+            pass
+
     # Some tools emit JSON event streams or prose around the final JSON.
-    candidates: List[str] = []
-    start_positions = [m.start() for m in re.finditer(r"[\[{]", text)]
-    for start in start_positions:
-        for end in range(len(text), start, -1):
-            if text[end - 1] not in "}]":
-                continue
-            candidate = text[start:end]
-            try:
-                return json.loads(candidate)
-            except Exception:
-                continue
-            finally:
-                if len(candidates) > 1000:
-                    break
+    # Look for the first { or [ and the last } or ].
+    start = text.find("{")
+    if start == -1:
+        start = text.find("[")
+    
+    end = text.rfind("}")
+    if end == -1:
+        end = text.rfind("]")
+    
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start : end + 1]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+
     return None
+
+
+def validate_plan_schema(plan: Any) -> Tuple[bool, str]:
+    if not isinstance(plan, dict):
+        return False, "Plan is not a dictionary"
+    if "tasks" not in plan or not isinstance(plan["tasks"], list):
+        return False, "Plan missing 'tasks' list"
+    
+    for i, task in enumerate(plan["tasks"]):
+        if not isinstance(task, dict):
+            return False, f"Task {i} is not a dictionary"
+        # Minimum required fields from planner.
+        for field in ["title"]:
+            if field not in task:
+                return False, f"Task {i} missing required field: {field}"
+    
+    return True, ""
 
 
 def render_table(headers: List[str], rows: List[List[str]]) -> str:
@@ -212,6 +254,48 @@ def confirm(prompt: str, assume_yes: bool = False) -> bool:
         return True
     value = input(f"{prompt} [y/N]: ").strip().lower()
     return value in {"y", "yes"}
+
+
+def interactive_edit_plan(plan: Dict[str, Any]) -> None:
+    while True:
+        show_tasks(plan, title="Plan Review (Interactive Mode)")
+        safe_print("\nOptions: [e]dit task, [d]elete task, [a]dd task, [f]inish")
+        choice = input("Choice: ").strip().lower()
+        if choice == "f":
+            break
+        elif choice == "e":
+            tid = input("Task ID to edit: ").strip().upper()
+            task = next((t for t in plan["tasks"] if t["id"] == tid), None)
+            if not task:
+                safe_print(f"Task {tid} not found.")
+                continue
+            safe_print(f"Editing {tid}: {task['title']}")
+            task["title"] = input(f"New title [{task['title']}]: ").strip() or task["title"]
+            task["model"] = input(f"New model [{task['model']}]: ").strip() or task["model"]
+            try:
+                task["timeout_seconds"] = int(input(f"New timeout [{task['timeout_seconds']}]: ").strip() or task["timeout_seconds"])
+                task["max_turns"] = int(input(f"New max turns [{task['max_turns']}]: ").strip() or task["max_turns"])
+            except ValueError:
+                safe_print("Invalid number. Keeping old values.")
+        elif choice == "d":
+            tid = input("Task ID to delete: ").strip().upper()
+            plan["tasks"] = [t for t in plan["tasks"] if t["id"] != tid]
+        elif choice == "a":
+            new_id = f"T{len(plan['tasks']) + 1:03d}"
+            title = input("Task title: ").strip()
+            if not title:
+                continue
+            plan["tasks"].append({
+                "id": new_id,
+                "title": title,
+                "status": "pending",
+                "agent": "claude-code",
+                "model": "sonnet",
+                "timeout_seconds": 900,
+                "max_turns": 4,
+            })
+        else:
+            safe_print("Unknown choice.")
 
 
 def init_project(args: argparse.Namespace) -> None:
@@ -412,8 +496,12 @@ def run_planner(engine: str, prompt: str, cfg: Dict[str, Any]) -> Tuple[Optional
                     parsed = nested
                     break
 
-    if isinstance(parsed, dict) and isinstance(parsed.get("tasks"), list):
-        return parsed, raw, ""
+    if parsed:
+        ok, err = validate_plan_schema(parsed)
+        if ok:
+            return parsed, raw, ""
+        return None, raw, f"Planner output failed schema validation: {err}"
+    
     return None, raw, "Planner output did not contain a valid Sutra task plan JSON."
 
 
@@ -560,7 +648,34 @@ def plan_command(args: argparse.Namespace) -> None:
     write_json(run_path / "progress.json", {"run_id": run_id, "events": [], "updated_at": now_iso()})
     write_json(run_path / "token-ledger.json", {"run_id": run_id, "tasks": [], "updated_at": now_iso()})
 
+    # Git branch creation.
+    if is_git_repo() and not args.no_git_branch and cfg.get("git", {}).get("auto_branch"):
+        prefix = cfg.get("git", {}).get("branch_prefix", "sutra/")
+        branch_name = f"{prefix}{run_id}"
+        safe_print(f"Creating git branch: {branch_name}")
+        try:
+            # Check if branch exists.
+            cp = subprocess.run(["git", "rev-parse", "--verify", branch_name], capture_output=True, check=False)
+            if cp.returncode == 0:
+                subprocess.run(["git", "checkout", branch_name], check=True, capture_output=True)
+            else:
+                subprocess.run(["git", "checkout", "-b", branch_name], check=True, capture_output=True)
+            plan["git_branch"] = branch_name
+            write_json(run_path / "task-plan.json", plan)
+        except Exception as exc:
+            safe_print(f"Warning: Failed to create/checkout git branch {branch_name}: {exc}")
+
     show_tasks(plan, title=f"Generated Sutra task plan: {run_id}")
+    
+    if not args.strict_planner and not confirm("Plan generated. Do you want to edit it?", assume_yes=False):
+        pass # Skip editing if user says no or if we are in non-interactive session (assume_yes=True logic would go here)
+    else:
+        # If strict_planner is off and user says yes, or if we want to force it.
+        # Actually, let's only do it if the user explicitly wants to edit.
+        if confirm("Interactive plan editing?", assume_yes=False):
+            interactive_edit_plan(plan)
+            write_json(run_path / "task-plan.json", plan)
+
     safe_print(f"\nPlan saved: {run_path / 'task-plan.json'}")
     if plan.get("planner_fallback"):
         safe_print("Note: local fallback planner was used. Run with --strict-planner to require Codex/Gemini JSON output.")
@@ -574,6 +689,31 @@ def load_plan(run_id: str) -> Tuple[Path, Dict[str, Any]]:
     if not plan_file.exists():
         raise SystemExit(f"Task plan not found: {plan_file}")
     return run_path, read_json(plan_file, {})
+
+
+def get_latest_run_id() -> Optional[str]:
+    ensure_initialized()
+    rdir = runs_dir()
+    if not rdir.exists():
+        return None
+    runs = [d for d in rdir.iterdir() if d.is_dir() and (d / "task-plan.json").exists()]
+    if not runs:
+        return None
+    # Sort by creation time of task-plan.json.
+    runs.sort(key=lambda d: (d / "task-plan.json").stat().st_mtime, reverse=True)
+    return runs[0].name
+
+
+def resume_command(args: argparse.Namespace) -> None:
+    run_id = args.run or get_latest_run_id()
+    if not run_id:
+        raise SystemExit("No runs found to resume. Provide --run or start a new one with --input.")
+    
+    safe_print(f"Resuming run: {run_id}")
+    # Forward to run_command_main.
+    args.run = run_id
+    args.input = None
+    run_command_main(args)
 
 
 def validate_task(task: Dict[str, Any], cfg: Dict[str, Any]) -> List[str]:
@@ -854,7 +994,7 @@ def parse_task_status(output: str) -> str:
     return "completed" if output.strip() else "failed"
 
 
-def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any], cfg: Dict[str, Any], dry_run: bool = False) -> str:
+def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any], cfg: Dict[str, Any], dry_run: bool = False, no_git_commit: bool = False) -> str:
     prompt = build_claude_prompt(plan, task)
     task_dir = run_path / "tasks" / str(task.get("id"))
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -893,6 +1033,21 @@ def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any]
         if not validation_ok:
             status = "failed"
 
+        # Git auto-commit.
+        if status == "completed" and is_git_repo() and not no_git_commit and cfg.get("git", {}).get("auto_commit"):
+            msg = f"sutra({plan.get('run_id')}): {task.get('id')} - {task.get('title')}"
+            safe_print(f"  committing changes: {msg}")
+            try:
+                subprocess.run(["git", "add", "."], check=True, capture_output=True)
+                # Check if there are changes to commit.
+                cp_diff = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
+                if cp_diff.returncode != 0:
+                    subprocess.run(["git", "commit", "-m", msg], check=True, capture_output=True)
+                else:
+                    safe_print("  no changes to commit.")
+            except Exception as exc:
+                safe_print(f"  Warning: git commit failed: {exc}")
+
         summary = output[-1000:] if output else "No Claude output captured."
         task["status"] = status
         task["completed_at" if status == "completed" else "updated_at"] = now_iso()
@@ -918,7 +1073,7 @@ def run_task_command(args: argparse.Namespace) -> None:
     task = next((t for t in plan.get("tasks", []) if t.get("id") == args.task), None)
     if task is None:
         raise SystemExit(f"Task not found: {args.task}")
-    status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run)
+    status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run, no_git_commit=getattr(args, 'no_git_commit', False))
     write_json(run_path / "task-plan.json", plan)
     if status not in {"completed", "dry-run"}:
         raise SystemExit(1)
@@ -960,7 +1115,7 @@ def run_command_main(args: argparse.Namespace) -> None:
         if task.get("status") == "completed" and not args.rerun_completed:
             safe_print(f"Skipping completed task {task.get('id')}")
             continue
-        status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run)
+        status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run, no_git_commit=args.no_git_commit)
         write_json(run_path / "task-plan.json", plan)
         if status != "completed" and not args.dry_run:
             plan["status"] = "blocked"
@@ -1071,6 +1226,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--engine", choices=["codex", "gemini"], default=None)
     p.add_argument("--run-id", default=None)
     p.add_argument("--strict-planner", action="store_true", help="Fail if planner does not return valid JSON")
+    p.add_argument("--no-git-branch", action="store_true", help="Skip creating a git branch")
     p.set_defaults(func=plan_command)
 
     p = sub.add_parser("validate", help="Validate Sutra run plan and Claude config")
@@ -1098,7 +1254,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strict-planner", action="store_true")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--rerun-completed", action="store_true")
+    p.add_argument("--no-git-commit", action="store_true", help="Skip committing after each task")
     p.set_defaults(func=run_command_main)
+
+    p = sub.add_parser("resume", help="Resume the latest or a specific run")
+    p.add_argument("--run", help="Run ID to resume (defaults to latest)")
+    p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
+    p.add_argument("--auto-approve", action="store_true")
+    p.add_argument("--skip-doctor", action="store_true")
+    p.add_argument("--smoke-test", action="store_true")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--rerun-completed", action="store_true")
+    p.add_argument("--no-git-commit", action="store_true")
+    p.set_defaults(func=resume_command)
 
     p = sub.add_parser("status", help="Show run status and tasks")
     p.add_argument("--run", required=True)
