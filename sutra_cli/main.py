@@ -55,6 +55,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
             "yarn lint",
             "git diff",
             "git status",
+            "test ",
+            "grep ",
+            "ls ",
         ],
         "deny_command_patterns": [
             "rm -rf",
@@ -72,6 +75,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def summarize_text(text: str) -> str:
+    lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    chars = len(text)
+    kb = chars / 1024
+    return f"{lines} lines ({kb:.1f}KB)"
 
 
 def cwd() -> Path:
@@ -622,18 +632,26 @@ def plan_command(args: argparse.Namespace) -> None:
     ensure_initialized()
     cfg = load_config()
     engine = args.engine or cfg.get("default_engine", "codex")
-    req_path = Path(args.input)
-    if not req_path.exists():
-        raise SystemExit(f"Requirement file not found: {req_path}")
-    requirement = req_path.read_text(encoding="utf-8")
-    run_id = args.run_id or slugify(req_path.stem if req_path.stem else "REQ")
+    
+    if args.input == "-":
+        safe_print("Reading requirement from stdin (paste text then press Ctrl+D)...")
+        requirement = sys.stdin.read()
+        req_name = "STDIN"
+    else:
+        req_path = Path(args.input)
+        if not req_path.exists():
+            raise SystemExit(f"Requirement file not found: {req_path}")
+        requirement = req_path.read_text(encoding="utf-8")
+        req_name = req_path.stem
+
+    run_id = args.run_id or slugify(req_name if req_name else "REQ")
     run_path = runs_dir() / run_id
     run_path.mkdir(parents=True, exist_ok=True)
 
+    safe_print(f"Planning with {engine} [Requirement: {summarize_text(requirement)}]...")
     prompt = build_planner_prompt(requirement, engine)
     (run_path / "planner-prompt.md").write_text(prompt, encoding="utf-8")
 
-    safe_print(f"Planning with {engine}...")
     parsed, raw, error = run_planner(engine, prompt, cfg)
     (run_path / "planner-output.raw.txt").write_text(raw or error, encoding="utf-8")
 
@@ -643,7 +661,7 @@ def plan_command(args: argparse.Namespace) -> None:
         safe_print("Planner did not return valid task JSON. Using Sutra local fallback planner.")
         parsed = local_fallback_plan(requirement)
 
-    plan = normalize_plan(parsed, run_id, str(req_path), engine, requirement)
+    plan = normalize_plan(parsed, run_id, "stdin" if args.input == "-" else str(req_path), engine, requirement)
     write_json(run_path / "task-plan.json", plan)
     write_json(run_path / "progress.json", {"run_id": run_id, "events": [], "updated_at": now_iso()})
     write_json(run_path / "token-ledger.json", {"run_id": run_id, "tasks": [], "updated_at": now_iso()})
@@ -667,12 +685,13 @@ def plan_command(args: argparse.Namespace) -> None:
 
     show_tasks(plan, title=f"Generated Sutra task plan: {run_id}")
     
-    if not args.strict_planner and not confirm("Plan generated. Do you want to edit it?", assume_yes=False):
-        pass # Skip editing if user says no or if we are in non-interactive session (assume_yes=True logic would go here)
+    # If we read from stdin, we likely can't do interactive confirmation if piped.
+    is_interactive = sys.stdin.isatty()
+
+    if not args.strict_planner and not confirm("Plan generated. Do you want to edit it?", assume_yes=not is_interactive):
+        pass 
     else:
-        # If strict_planner is off and user says yes, or if we want to force it.
-        # Actually, let's only do it if the user explicitly wants to edit.
-        if confirm("Interactive plan editing?", assume_yes=False):
+        if is_interactive and confirm("Interactive plan editing?", assume_yes=False):
             interactive_edit_plan(plan)
             write_json(run_path / "task-plan.json", plan)
 
@@ -1002,7 +1021,7 @@ def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any]
 
     safe_print(f"\n▶ Executing {task.get('id')}: {task.get('title')}")
     safe_print(f"  model={task.get('model')} timeout={task.get('timeout_seconds')}s max_turns={task.get('max_turns')}")
-    safe_print("  allowed_tools=" + ", ".join(task.get("allowed_tools", [])))
+    safe_print(f"  prompt={summarize_text(prompt)} allowed_tools=" + ", ".join(task.get("allowed_tools", [])))
 
     if dry_run:
         safe_print("  DRY RUN: Claude Code invocation skipped.")
