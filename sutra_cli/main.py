@@ -1599,13 +1599,42 @@ def update_state_file(run_id: str, last_action: str, status: str, next_step: str
     state_file.write_text(content, encoding="utf-8")
 
 
+def rollback_command(args: argparse.Namespace) -> None:
+    ensure_initialized()
+    run_id = args.run or get_latest_run_id()
+    if not run_id:
+        raise SystemExit("No run ID found.")
+    
+    msg = f"sutra(PRE): {run_id} - {args.task}"
+    safe_print(f"Rolling back to state before task {args.task}...")
+    
+    try:
+        # Find the commit hash for the safety checkpoint
+        cp = subprocess.run(["git", "log", "--grep", msg, "--format=%H", "-n", "1"], capture_output=True, text=True, check=True)
+        commit_hash = cp.stdout.strip()
+        if not commit_hash:
+            raise SystemExit(f"No safety checkpoint found for task {args.task} in this run.")
+        
+        safe_print(f"  found checkpoint: {commit_hash}")
+        if confirm(f"Revert all changes and reset to {commit_hash}?", assume_yes=False):
+            subprocess.run(["git", "reset", "--hard", commit_hash], check=True)
+            safe_print("\nRollback successful.")
+    except Exception as exc:
+        safe_print(f"Rollback failed: {exc}")
+        raise SystemExit(1)
+
+
 def next_command(args: argparse.Namespace) -> None:
     ensure_initialized()
     run_id = get_latest_run_id()
+    chain = getattr(args, "chain", False)
     
     if not run_id:
         safe_print("No active run found. Starting a new task wizard...")
         start_command(args)
+        # After start_command, a run will be created. Let's recursive if chaining.
+        if chain:
+            next_command(args)
         return
 
     run_path, plan = load_plan(run_id)
@@ -1617,23 +1646,56 @@ def next_command(args: argparse.Namespace) -> None:
     if status == "planned":
         safe_print("Next logical step: Validating the plan.")
         validate_command(argparse.Namespace(run=run_id))
+        if chain:
+            next_command(args)
     elif status == "validated" or (status == "planned" and not approved):
-        # The logic in validate_command doesn't currently update status to "validated"
-        # Let's check approved flag
         if not approved:
             safe_print("Next logical step: Approving the plan.")
             approve_command(argparse.Namespace(run=run_id))
+            if chain:
+                next_command(args)
         else:
             safe_print("Next logical step: Running the tasks.")
-            run_command_main(argparse.Namespace(run=run_id, input=None, engine=None, yes=False, auto_approve=False, skip_doctor=True, smoke_test=False, strict_planner=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=True))
+            run_command_main(argparse.Namespace(run=run_id, input=None, engine=None, yes=chain, auto_approve=chain, skip_doctor=True, smoke_test=False, strict_planner=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=not chain))
     elif status == "running" or status == "blocked":
         safe_print("Resuming current run.")
-        resume_command(argparse.Namespace(run=run_id, yes=False, auto_approve=False, skip_doctor=True, smoke_test=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=True))
+        resume_command(argparse.Namespace(run=run_id, yes=chain, auto_approve=chain, skip_doctor=True, smoke_test=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=not chain))
     elif status == "completed":
         safe_print("Current run is completed. Opening dashboard.")
         dashboard_command(argparse.Namespace(port=8080))
     else:
         safe_print(f"Unknown status '{status}'. Try running 'sutra status --run {run_id}' for details.")
+
+
+def interrogate_requirement(requirement: str, engine: str, cfg: Dict[str, Any]) -> str:
+    safe_print(f"Deep analyzing requirement with {engine} to identify missing context...")
+    prompt = f"""
+You are the Sutra project architect. I am about to give you a requirement. 
+Before we start planning, identify 3 critical clarifying questions that would help you generate a perfect, production-ready implementation plan.
+
+Requirement:
+{requirement}
+
+Format your response as a numbered list of 3 questions.
+""".strip()
+    
+    _, raw, error = run_planner(engine, prompt, cfg)
+    if error:
+        return requirement
+        
+    safe_print("\nSutra needs a bit more context to be highly accurate:")
+    safe_print(raw.strip())
+    
+    safe_print("\n(Enter your answers below, or just press Enter to skip and proceed with current context)")
+    answers = []
+    for i in range(1, 4):
+        ans = input(f"Answer {i}: ").strip()
+        if ans:
+            answers.append(f"Q{i} Context: {ans}")
+            
+    if answers:
+        return requirement + "\n\n## Additional Developer Context\n" + "\n".join(answers)
+    return requirement
 
 
 def start_command(args: argparse.Namespace) -> None:
@@ -1655,11 +1717,18 @@ def start_command(args: argparse.Namespace) -> None:
     choice = input("Choice [1/2]: ").strip()
 
     input_source = "-"
+    requirement = ""
     if choice == "2":
         input_source = input("   Path to file: ").strip()
         if not Path(input_source).exists():
             safe_print(f"   Error: File {input_source} not found. Falling back to paste mode.")
             input_source = "-"
+        else:
+            requirement = Path(input_source).read_text(encoding="utf-8")
+    
+    if input_source == "-":
+        safe_print("   Paste requirement text below (Press Ctrl+D when finished):")
+        requirement = sys.stdin.read()
 
     # 3. Ask for Engine (or use default)
     engine = cfg.get("default_engine", "codex")
@@ -1668,12 +1737,19 @@ def start_command(args: argparse.Namespace) -> None:
     if custom_engine in {"gemini", "codex"}:
         engine = custom_engine
 
+    # Interrogation phase
+    requirement = interrogate_requirement(requirement, engine, cfg)
+
     # 4. Confirm and Run Plan
-    safe_print(f"\nReady! Running: sutra plan --input {input_source} --engine {engine} --run-id {run_id}")
+    safe_print(f"\nReady! Running: sutra plan --input [context_gathered] --engine {engine} --run-id {run_id}")
     
+    # We need a temporary file for the requirement now that it might be modified
+    temp_req = Path(f".sutra/temp-{run_id}-req.md")
+    temp_req.write_text(requirement, encoding="utf-8")
+
     # Construct args for plan_command
     plan_args = argparse.Namespace(
-        input=input_source,
+        input=str(temp_req),
         engine=engine,
         run_id=run_id,
         strict_planner=False,
@@ -1681,6 +1757,8 @@ def start_command(args: argparse.Namespace) -> None:
     )
     
     plan_command(plan_args)
+    if temp_req.exists():
+        temp_req.unlink()
 
 
 def update_command(args: argparse.Namespace) -> None:
@@ -1783,7 +1861,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=start_command)
 
     p = sub.add_parser("next", help="Automatically execute the next step in the current run")
+    p.add_argument("--chain", action="store_true", help="Automatically run through all steps without stopping")
     p.set_defaults(func=next_command)
+
+    p = sub.add_parser("rollback", help="Revert codebase to the state before a specific task")
+    p.add_argument("--run", help="Run ID (defaults to latest)")
+    p.add_argument("--task", required=True, help="Task ID to rollback to its start")
+    p.set_defaults(func=rollback_command)
 
     p = sub.add_parser("update", help="Update Sutra CLI to the latest version")
     p.set_defaults(func=update_command)
@@ -1819,6 +1903,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", default=None)
     p.add_argument("--input", default=None, help="Optional requirement file; plans then runs")
     p.add_argument("--engine", choices=["codex", "gemini"], default=None)
+    p.add_argument("--chain", action="store_true", help="Run through plan/validate/approve/run in one go")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation")
     p.add_argument("--auto-approve", action="store_true", help="Skip confirmation and mark run approved")
     p.add_argument("--skip-doctor", action="store_true")
