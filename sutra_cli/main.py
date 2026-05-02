@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 APP_DIR = ".sutra"
 RUNS_DIR = "runs"
 CONFIG_FILE = "config.json"
-VERSION = "0.3.5"
+VERSION = "0.3.6"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "default_engine": "codex",
@@ -577,7 +577,8 @@ def run_planner(engine: str, prompt: str, cfg: Dict[str, Any]) -> Tuple[Optional
             cp = run_command([cmd, "exec", prompt], timeout=timeout)
         elif engine == "gemini":
             cmd = cfg["planner"].get("gemini_command", "gemini")
-            cp = run_command([cmd, "-p", prompt, "--output-format", "json"], timeout=timeout)
+            # Automatically add --skip-trust to prevent blocking on interactive trust prompts
+            cp = run_command([cmd, "-p", prompt, "--output-format", "json", "--skip-trust"], timeout=timeout)
         else:
             return None, "", f"Unsupported engine: {engine}"
     except Exception as exc:
