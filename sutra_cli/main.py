@@ -192,58 +192,49 @@ def extract_json_blob(text: str) -> Optional[Any]:
     if not text:
         return None
 
-    # Try direct parse.
+    # helper for cleaning prose around JSON
+    def clean_prose(t: str) -> str:
+        # Remove markdown blocks
+        t = re.sub(r"```(?:json)?\s*(.*?)\s*```", r"\1", t, flags=re.DOTALL)
+        # Find first { or [ and last } or ]
+        s = t.find("{")
+        if s == -1: s = t.find("[")
+        e = t.rfind("}")
+        if e == -1: e = t.rfind("]")
+        if s != -1 and e != -1 and e > s:
+            return t[s : e + 1]
+        return t
+
+    # Try direct parse first
     try:
         data = json.loads(text)
-        # If it's a dict with a 'response' field that contains a string, try parsing that string
+        if isinstance(data, dict):
+            for key in ["response", "text", "content", "message"]:
+                val = data.get(key)
+                if isinstance(val, str) and ("{" in val or "[" in val):
+                    # Recursively try to unwrap nested JSON in prose
+                    nested = extract_json_blob(val)
+                    if nested: return nested
+        return data
+    except Exception:
+        pass
+
+    # Try cleaning prose and parsing again
+    cleaned = clean_prose(text)
+    try:
+        data = json.loads(cleaned)
+        # Repeat unwrapping for cleaned data
         if isinstance(data, dict):
             for key in ["response", "text", "content", "message"]:
                 val = data.get(key)
                 if isinstance(val, str) and ("{" in val or "[" in val):
                     nested = extract_json_blob(val)
-                    if nested:
-                        return nested
+                    if nested: return nested
         return data
     except Exception:
         pass
 
-    # Look for JSON blocks ```json ... ```
-    # Try multiple blocks in case there are several
-    matches = re.findall(r"```(?:json)?\s+(.*?)\s+```", text, re.DOTALL)
-    for block in reversed(matches): # Try the last block first, usually the final JSON
-        try:
-            return json.loads(block)
-        except Exception:
-            pass
-
-    # Some tools emit JSON event streams or prose around the final JSON.
-    # Look for the first { or [ and the last } or ].
-    # We do this more carefully to handle multiple JSON-like structures in prose.
-    start_indices = [i for i, char in enumerate(text) if char in "{["]
-    end_indices = [i for i, char in enumerate(text) if char in "}]"]
-
-    if start_indices and end_indices:
-        # Try largest candidate first
-        start = start_indices[0]
-        end = end_indices[-1]
-        if end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except Exception:
-                pass
-
-        # Try last balanced candidate
-        # (Naive, but often works for AI prose + JSON)
-        for s in reversed(start_indices):
-            for e in reversed(end_indices):
-                if e > s:
-                    try:
-                        return json.loads(text[s : e + 1])
-                    except Exception:
-                        continue
-
     return None
-
 def validate_plan_schema(plan: Any) -> Tuple[bool, str]:
     if not isinstance(plan, dict):
         return False, "Plan is not a dictionary"
