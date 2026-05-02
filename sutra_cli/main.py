@@ -422,6 +422,19 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
     checks: List[Tuple[str, bool, str]] = []
     ok, msg = get_version(planner_cmd)
     checks.append((f"{engine} CLI", ok, msg))
+    
+    # API Key checks
+    if engine == "gemini":
+        gemini_key = os.environ.get("GOOGLE_API_KEY")
+        checks.append(("GOOGLE_API_KEY", bool(gemini_key), "found" if gemini_key else "MISSING"))
+    elif engine == "codex":
+        # Codex might use different keys depending on implementation, but usually it's OpenAI or similar.
+        # For now, let's assume it's part of the CLI auth.
+        pass
+
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+    checks.append(("ANTHROPIC_API_KEY", bool(anthropic_key), "found" if anthropic_key else "MISSING (optional for CLI, recommended for API)"))
+
     ok, msg = get_version(claude_cmd)
     checks.append(("Claude Code CLI", ok, msg))
     checks.append(("Sutra config", config_path().exists(), str(config_path())))
@@ -670,7 +683,7 @@ def normalize_plan(plan: Dict[str, Any], run_id: str, requirement_file: str, eng
         "title": plan.get("title", run_id),
         "engine": engine,
         "requirement_file": requirement_file,
-        "requirement_excerpt": requirement[:4000],
+        "full_requirement": requirement[:100000], # Increased to 100KB for deep context
         "risk": plan.get("risk", "medium"),
         "status": "planned",
         "approved": False,
@@ -874,7 +887,7 @@ def approve_command(args: argparse.Namespace) -> None:
     safe_print(f"Next: sutra run --run {args.run}")
 
 
-def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
+def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any], repo_map: Optional[str] = None) -> str:
     context_files_list = task.get("context_files", [])
     context_contents = []
     for f in context_files_list:
@@ -892,8 +905,10 @@ def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
     context_files_str = "\n\n".join(context_contents)
     criteria = "\n".join(f"- {c}" for c in task.get("success_criteria", []))
     validation = "\n".join(f"- {c}" for c in task.get("validation_commands", []))
-    requirement = plan.get("requirement_excerpt", "")
+    requirement = plan.get("full_requirement") or plan.get("requirement_excerpt", "")
     
+    repo_context = f"\n# Updated Repository Map\n{repo_map}\n" if repo_map else ""
+
     return f"""
 # Sutra Operating Rules
 - Execute only the assigned task.
@@ -904,8 +919,9 @@ def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
 - Run the validation commands if applicable.
 - Update docs/progress.md only if the task asks for progress/documentation update.
 
-# Requirement Excerpt
+# Full Requirement Context
 {requirement}
+{repo_context}
 
 # Context Files Content
 {context_files_str}
@@ -1011,7 +1027,7 @@ def find_usage(obj: Any) -> Dict[str, float]:
     return usage
 
 
-def update_token_ledger(run_path: Path, task: Dict[str, Any], prompt: str, output: str, cfg: Dict[str, Any], parsed_output: Any) -> None:
+def update_token_ledger(run_path: Path, task: Dict[str, Any], prompt: str, output: str, cfg: Dict[str, Any], parsed_output: Any) -> Dict[str, Any]:
     ledger_file = run_path / "token-ledger.json"
     ledger = read_json(ledger_file, {"tasks": []})
     usage = find_usage(parsed_output) if parsed_output is not None else find_usage(extract_json_blob(output) or {})
@@ -1026,7 +1042,7 @@ def update_token_ledger(run_path: Path, task: Dict[str, Any], prompt: str, outpu
     multiplier = float(cfg["policy"].get("token_baseline_multiplier", 1.50))
     baseline_tokens = int(actual_total * multiplier)
     saved = max(0, baseline_tokens - actual_total)
-    ledger.setdefault("tasks", []).append({
+    task_entry = {
         "task_id": task.get("id"),
         "model": task.get("model"),
         "actual": {
@@ -1053,9 +1069,11 @@ def update_token_ledger(run_path: Path, task: Dict[str, Any], prompt: str, outpu
             "task_specific_allowed_tools",
         ],
         "created_at": now_iso(),
-    })
+    }
+    ledger.setdefault("tasks", []).append(task_entry)
     ledger["updated_at"] = now_iso()
     write_json(ledger_file, ledger)
+    return task_entry
 
 
 def run_validation_commands(task: Dict[str, Any], cfg: Dict[str, Any], run_path: Path) -> Tuple[bool, List[Dict[str, Any]]]:
@@ -1107,7 +1125,8 @@ def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any]
     if not dry_run and cfg.get("git", {}).get("auto_commit", True):
         create_checkpoint(plan.get("run_id", "REQ"), task.get("id", "T000"))
     
-    prompt = build_claude_prompt(plan, task)
+    repo_map = get_repo_map()
+    prompt = build_claude_prompt(plan, task, repo_map=repo_map)
     if hint:
         prompt += f"\n\n## Developer Hint\n{hint}"
     task_dir = run_path / "tasks" / str(task.get("id"))
@@ -1134,7 +1153,12 @@ def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any]
         (task_dir / "claude-output.txt").write_text(output + "\n", encoding="utf-8")
         parsed = extract_json_blob(output)
         write_json(task_dir / "claude-output.parsed.json", parsed if parsed is not None else {"raw_output": output[-4000:]})
-        update_token_ledger(run_path, task, prompt, output, cfg, parsed)
+        task_usage = update_token_ledger(run_path, task, prompt, output, cfg, parsed)
+        
+        actual = task_usage.get("actual", {})
+        total_tokens = actual.get("input_tokens", 0) + actual.get("output_tokens", 0)
+        saved = task_usage.get("savings", {}).get("tokens_saved", 0)
+        safe_print(f"  cost_ticker> tokens: {total_tokens} (saved: {saved}) | est_cost: ${actual.get('estimated_cost_usd', 0.0):.4f}")
 
         status = parse_task_status(output)
         if cp.returncode != 0:
