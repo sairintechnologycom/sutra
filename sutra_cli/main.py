@@ -1953,6 +1953,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # Manual version check to bypass argparse required-command logic in some environments
+    if "--version" in argv or "-v" in argv or (len(argv) == 1 and argv[0] == "version"):
+        print(f"sutra {VERSION}")
+        return
+
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
