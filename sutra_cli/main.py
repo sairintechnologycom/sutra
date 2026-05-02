@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import glob
+import http.server
 import json
 import os
 import re
 import shlex
 import shutil
+import socketserver
 import subprocess
 import sys
 import textwrap
+import threading
+import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -436,12 +441,53 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
     return all_ok
 
 
-def build_planner_prompt(requirement: str, engine: str) -> str:
+def get_repo_map() -> str:
+    if not is_git_repo():
+        try:
+            files = []
+            for root, dirs, filenames in os.walk(".", topdown=True):
+                dirs[:] = [d for d in dirs if d not in {".git", ".sutra", "__pycache__", "node_modules", ".venv", ".pytest_cache"}]
+                for f in filenames:
+                    files.append(os.path.join(root, f).lstrip("./"))
+            return "\n".join(files[:1000])
+        except Exception:
+            return "No repo map available."
+    try:
+        cp = run_command(["git", "ls-files"], timeout=15)
+        if cp.returncode == 0:
+            return cp.stdout.strip()
+    except Exception:
+        pass
+    return "No repo map available."
+def detect_project_type() -> Dict[str, Any]:
+    info = {
+        "type": "unknown",
+        "suggested_validation": ["git status --short"]
+    }
+    if (cwd() / "package.json").exists():
+        info["type"] = "nodejs"
+        info["suggested_validation"].append("npm test")
+    if (cwd() / "pytest.ini").exists() or (cwd() / "conftest.py").exists() or glob.glob("**/test_*.py", recursive=True):
+        info["type"] = "python"
+        info["suggested_validation"].append("pytest")
+    if (cwd() / "Cargo.toml").exists():
+        info["type"] = "rust"
+        info["suggested_validation"].append("cargo test")
+    if (cwd() / "go.mod").exists():
+        info["type"] = "go"
+        info["suggested_validation"].append("go test ./...")
+    return info
+
+
+def build_planner_prompt(requirement: str, engine: str, repo_map: Optional[str] = None) -> str:
+    project_info = detect_project_type()
+    project_context = f"\nProject Type: {project_info['type']}\nSuggested Validation: {', '.join(project_info['suggested_validation'])}\n"
+    repo_context = f"\nRepository Map:\n{repo_map}\n" if repo_map else ""
     return f"""
 You are the Sutra planning engine using {engine}.
 
 Convert the requirement into a bounded task plan for Claude Code. Return ONLY valid JSON.
-
+{project_context}
 Hard requirements:
 - Each task must be small and bounded.
 - Each task must include id, title, status, agent, model, timeout_seconds, max_turns, max_budget_usd, allowed_tools, validation_commands, success_criteria, context_files.
@@ -476,6 +522,7 @@ Return this JSON shape:
 
 Requirement:
 {requirement}
+{repo_context}
 """.strip()
 
 
@@ -648,8 +695,9 @@ def plan_command(args: argparse.Namespace) -> None:
     run_path = runs_dir() / run_id
     run_path.mkdir(parents=True, exist_ok=True)
 
+    repo_map = get_repo_map()
     safe_print(f"Planning with {engine} [Requirement: {summarize_text(requirement)}]...")
-    prompt = build_planner_prompt(requirement, engine)
+    prompt = build_planner_prompt(requirement, engine, repo_map=repo_map)
     (run_path / "planner-prompt.md").write_text(prompt, encoding="utf-8")
 
     parsed, raw, error = run_planner(engine, prompt, cfg)
@@ -815,33 +863,48 @@ def approve_command(args: argparse.Namespace) -> None:
 
 
 def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
-    context_files = "\n".join(f"- {p}" for p in task.get("context_files", []))
+    context_files_list = task.get("context_files", [])
+    context_contents = []
+    for f in context_files_list:
+        fpath = cwd() / f
+        if fpath.exists() and fpath.is_file():
+            try:
+                # Limit size to avoid blowing up prompt unnecessarily
+                content = fpath.read_text(encoding="utf-8")
+                if len(content) > 20000:
+                    content = content[:20000] + "\n... [truncated]"
+                context_contents.append(f"File: {f}\n```\n{content}\n```")
+            except Exception:
+                pass
+    
+    context_files_str = "\n\n".join(context_contents)
     criteria = "\n".join(f"- {c}" for c in task.get("success_criteria", []))
     validation = "\n".join(f"- {c}" for c in task.get("validation_commands", []))
     requirement = plan.get("requirement_excerpt", "")
+    
     return f"""
-# Sutra Claude Code Task
+# Sutra Operating Rules
+- Execute only the assigned task.
+- Do not expand scope.
+- Do not run destructive commands.
+- Keep changes small and task-scoped.
+- **IMPORTANT**: Context files are provided below. Do not use 'Read' tool on these files unless you believe they have changed or you need to read a section beyond what was provided.
+- Run the validation commands if applicable.
+- Update docs/progress.md only if the task asks for progress/documentation update.
 
+# Requirement Excerpt
+{requirement}
+
+# Context Files Content
+{context_files_str}
+
+# Sutra Claude Code Task Details
 ## Run
 {plan.get('run_id')}: {plan.get('title')}
 
 ## Task
-ID: {task.get('id')}\nTitle: {task.get('title')}
-
-## Operating Rules
-- Execute only this task.
-- Do not expand scope.
-- Do not run destructive commands.
-- Keep changes small and task-scoped.
-- Prefer reading listed context files before modifying code.
-- Run the validation commands if applicable.
-- Update docs/progress.md only if the task asks for progress/documentation update.
-
-## Requirement Excerpt
-{requirement}
-
-## Context Files
-{context_files}
+ID: {task.get('id')}
+Title: {task.get('title')}
 
 ## Success Criteria
 {criteria}
@@ -1013,8 +1076,28 @@ def parse_task_status(output: str) -> str:
     return "completed" if output.strip() else "failed"
 
 
-def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any], cfg: Dict[str, Any], dry_run: bool = False, no_git_commit: bool = False) -> str:
+def create_checkpoint(run_id: str, task_id: str) -> None:
+    if not is_git_repo():
+        return
+    msg = f"sutra(PRE): {run_id} - {task_id}"
+    try:
+        # Check if there are dirty changes to commit before task starts
+        cp_status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=False)
+        if cp_status.stdout.strip():
+            subprocess.run(["git", "add", "."], check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", msg], check=True, capture_output=True)
+            safe_print(f"  safety checkpoint created: {msg}")
+    except Exception as exc:
+        safe_print(f"  Warning: failed to create safety checkpoint: {exc}")
+
+
+def run_task_internal(run_path: Path, plan: Dict[str, Any], task: Dict[str, Any], cfg: Dict[str, Any], dry_run: bool = False, no_git_commit: bool = False, hint: Optional[str] = None) -> str:
+    if not dry_run and cfg.get("git", {}).get("auto_commit", True):
+        create_checkpoint(plan.get("run_id", "REQ"), task.get("id", "T000"))
+    
     prompt = build_claude_prompt(plan, task)
+    if hint:
+        prompt += f"\n\n## Developer Hint\n{hint}"
     task_dir = run_path / "tasks" / str(task.get("id"))
     task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -1130,17 +1213,49 @@ def run_command_main(args: argparse.Namespace) -> None:
     plan["started_at"] = plan.get("started_at") or now_iso()
     write_json(run_path / "task-plan.json", plan)
 
-    for task in plan.get("tasks", []):
+    tasks = plan.get("tasks", [])
+    i = 0
+    while i < len(tasks):
+        task = tasks[i]
         if task.get("status") == "completed" and not args.rerun_completed:
             safe_print(f"Skipping completed task {task.get('id')}")
+            i += 1
             continue
+        
         status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run, no_git_commit=args.no_git_commit)
         write_json(run_path / "task-plan.json", plan)
+
+        if args.step:
+            while True:
+                safe_print(f"\nTask {task.get('id')} finished with status: {status} [Step Mode]")
+                choice = input("[C]ontinue, [R]etry, [H]int & Retry, [D]iff, [E]dit plan, [A]bort: ").strip().lower()
+                if choice == "c":
+                    break
+                elif choice == "r":
+                    status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run, no_git_commit=args.no_git_commit)
+                    write_json(run_path / "task-plan.json", plan)
+                elif choice == "h":
+                    hint = input("Enter hint for Claude: ").strip()
+                    status = run_task_internal(run_path, plan, task, cfg, dry_run=args.dry_run, no_git_commit=args.no_git_commit, hint=hint)
+                    write_json(run_path / "task-plan.json", plan)
+                elif choice == "d":
+                    subprocess.run(["git", "diff"])
+                elif choice == "e":
+                    interactive_edit_plan(plan)
+                    write_json(run_path / "task-plan.json", plan)
+                    tasks = plan.get("tasks", []) # Refresh tasks list
+                elif choice == "a":
+                    raise SystemExit("Aborted by user.")
+                else:
+                    safe_print("Unknown choice.")
+
         if status != "completed" and not args.dry_run:
             plan["status"] = "blocked"
             write_json(run_path / "task-plan.json", plan)
             safe_print(f"Run blocked at task {task.get('id')}. Review {run_path / 'tasks' / str(task.get('id'))}")
             raise SystemExit(1)
+        
+        i += 1
 
     plan["status"] = "completed" if not args.dry_run else "dry-run"
     plan["completed_at"] = now_iso()
@@ -1195,6 +1310,208 @@ def summarize_run(run_id: str) -> None:
 
 def summarize_command(args: argparse.Namespace) -> None:
     summarize_run(args.run)
+
+
+class SutraDashboardHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/api/runs":
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            rdir = runs_dir()
+            runs = []
+            if rdir.exists():
+                for d in rdir.iterdir():
+                    if d.is_dir() and (d / "task-plan.json").exists():
+                        plan = read_json(d / "task-plan.json", {})
+                        runs.append({
+                            "id": d.name,
+                            "title": plan.get("title"),
+                            "status": plan.get("status"),
+                            "created_at": plan.get("created_at")
+                        })
+            # Sort by created_at desc
+            runs.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+            self.wfile.write(json.dumps(runs).encode())
+            return
+
+        if self.path.startswith("/api/run/"):
+            run_id = self.path.replace("/api/run/", "")
+            run_path = runs_dir() / run_id
+            if not run_path.exists():
+                self.send_error(404)
+                return
+            
+            plan = read_json(run_path / "task-plan.json", {})
+            ledger = read_json(run_path / "token-ledger.json", {"tasks": []})
+            progress = read_json(run_path / "progress.json", {"events": []})
+            
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "plan": plan,
+                "ledger": ledger,
+                "progress": progress
+            }).encode())
+            return
+
+        # Main Dashboard UI
+        if self.path == "/" or self.path == "/index.html":
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Sutra Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1200px; margin: 0 auto; padding: 20px; background: #f4f7f6; }
+        h1, h2 { color: #2c3e50; }
+        .run-list { display: grid; grid-template-columns: 1fr 3fr; gap: 20px; }
+        .sidebar { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); height: fit-content; }
+        .main-content { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        .run-item { padding: 10px; margin-bottom: 10px; border-bottom: 1px solid #eee; cursor: pointer; border-radius: 4px; transition: background 0.2s; }
+        .run-item:hover { background: #f0f0f0; }
+        .run-item.active { background: #3498db; color: #fff; }
+        .status { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; text-transform: uppercase; }
+        .status-completed { background: #2ecc71; color: #fff; }
+        .status-running { background: #3498db; color: #fff; }
+        .status-blocked { background: #e74c3c; color: #fff; }
+        .status-planned { background: #95a5a6; color: #fff; }
+        .task-card { border: 1px solid #eee; padding: 15px; margin-bottom: 15px; border-radius: 6px; }
+        .task-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .tokens-table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        .tokens-table th, .tokens-table td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; }
+        .tokens-table th { background: #f9f9f9; }
+        .savings { color: #27ae60; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Sutra Dashboard</h1>
+    <div class="run-list">
+        <div class="sidebar" id="sidebar">
+            <h3>Recent Runs</h3>
+            <div id="runs-container">Loading runs...</div>
+        </div>
+        <div class="main-content" id="detail-container">
+            <p>Select a run from the sidebar to view details.</p>
+        </div>
+    </div>
+
+    <script>
+        async function loadRuns() {
+            const resp = await fetch('/api/runs');
+            const runs = await resp.json();
+            const container = document.getElementById('runs-container');
+            container.innerHTML = '';
+            runs.forEach(run => {
+                const div = document.createElement('div');
+                div.className = 'run-item';
+                div.onclick = () => loadRunDetail(run.id, div);
+                div.innerHTML = `
+                    <strong>${run.id}</strong><br>
+                    <small>${run.title || ''}</small><br>
+                    <span class="status status-${run.status}">${run.status}</span>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        async function loadRunDetail(runId, element) {
+            document.querySelectorAll('.run-item').forEach(el => el.classList.remove('active'));
+            element.classList.add('active');
+            
+            const resp = await fetch(`/api/run/${runId}`);
+            const data = await resp.json();
+            const container = document.getElementById('detail-container');
+            
+            let tasksHtml = data.plan.tasks.map(t => `
+                <div class="task-card">
+                    <div class="task-header">
+                        <strong>${t.id}: ${t.title}</strong>
+                        <span class="status status-${t.status}">${t.status}</span>
+                    </div>
+                    <div><small>Model: ${t.model} | Timeout: ${t.timeout_seconds}s | Max Turns: ${t.max_turns}</small></div>
+                </div>
+            `).join('');
+
+            let tokensHtml = '';
+            if (data.ledger && data.ledger.tasks && data.ledger.tasks.length > 0) {
+                tokensHtml = `
+                    <h2>Token Savings</h2>
+                    <table class="tokens-table">
+                        <thead>
+                            <tr>
+                                <th>Task</th>
+                                <th>Model</th>
+                                <th>Actual</th>
+                                <th>Baseline</th>
+                                <th>Saved</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${data.ledger.tasks.map(item => `
+                                <tr>
+                                    <td>${item.task_id}</td>
+                                    <td>${item.model}</td>
+                                    <td>${item.actual.input_tokens + item.actual.output_tokens}</td>
+                                    <td>${item.baseline.estimated_tokens}</td>
+                                    <td class="savings">${item.savings.tokens_saved} (${item.savings.percent_saved}%)</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            }
+
+            container.innerHTML = `
+                <h2>Run: ${runId}</h2>
+                <p><strong>Status:</strong> <span class="status status-${data.plan.status}">${data.plan.status}</span></p>
+                <p><strong>Planner:</strong> ${data.plan.engine}</p>
+                
+                <h3>Task Plan</h3>
+                ${tasksHtml}
+                
+                ${tokensHtml}
+            `;
+        }
+
+        loadRuns();
+    </script>
+</body>
+</html>
+            """
+            self.wfile.write(html.encode())
+            return
+            
+        return super().do_GET()
+
+
+def dashboard_command(args: argparse.Namespace) -> None:
+    ensure_initialized()
+    port = args.port
+    handler = SutraDashboardHandler
+    
+    # Run in a separate thread so it doesn't block (optional, but good for CLI UX)
+    # However, for a simple CLI command, blocking is fine.
+    
+    safe_print(f"Starting Sutra Dashboard at http://localhost:{port}")
+    safe_print("Press Ctrl+C to stop.")
+    
+    # Auto-open browser
+    webbrowser.open(f"http://localhost:{port}")
+    
+    try:
+        with socketserver.TCPServer(("", port), handler) as httpd:
+            httpd.serve_forever()
+    except KeyboardInterrupt:
+        safe_print("\nDashboard stopped.")
+        raise SystemExit(0)
+    except Exception as exc:
+        safe_print(f"Error starting dashboard: {exc}")
+        raise SystemExit(1)
 
 
 def tokens_report_command(args: argparse.Namespace) -> None:
@@ -1318,6 +1635,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--rerun-completed", action="store_true")
     p.add_argument("--no-git-commit", action="store_true", help="Skip committing after each task")
+    p.add_argument("--step", action="store_true", help="Pause after each task for review")
     p.set_defaults(func=run_command_main)
 
     p = sub.add_parser("resume", help="Resume the latest or a specific run")
@@ -1329,6 +1647,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--rerun-completed", action="store_true")
     p.add_argument("--no-git-commit", action="store_true")
+    p.add_argument("--step", action="store_true", help="Pause after each task for review")
     p.set_defaults(func=resume_command)
 
     p = sub.add_parser("status", help="Show run status and tasks")
@@ -1338,6 +1657,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("summarize", help="Generate run summary")
     p.add_argument("--run", required=True)
     p.set_defaults(func=summarize_command)
+
+    p = sub.add_parser("dashboard", help="Launch local web dashboard to view runs")
+    p.add_argument("--port", type=int, default=8080, help="Port to run the dashboard on")
+    p.set_defaults(func=dashboard_command)
 
     p = sub.add_parser("tokens", help="Token ledger commands")
     token_sub = p.add_subparsers(dest="tokens_command", required=True)
