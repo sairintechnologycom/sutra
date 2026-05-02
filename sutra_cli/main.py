@@ -1227,6 +1227,47 @@ def tokens_report_command(args: argparse.Namespace) -> None:
     safe_print("\nNote: Tokens saved are estimated against Sutra's configured baseline multiplier unless Claude usage data is available in output.")
 
 
+def update_command(args: argparse.Namespace) -> None:
+    safe_print("Checking for updates...")
+    
+    # 1. Check if we are running from a git clone (editable install).
+    if (Path(__file__).parent.parent / ".git").exists():
+        safe_print("Detected editable/git installation. Pulling latest changes...")
+        try:
+            subprocess.run(["git", "pull"], check=True, cwd=str(Path(__file__).parent.parent))
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "."], check=True, cwd=str(Path(__file__).parent.parent))
+            safe_print("Successfully updated from git.")
+        except Exception as exc:
+            safe_print(f"Update failed: {exc}")
+        return
+
+    # 2. Check for pipx.
+    is_pipx = "pipx" in sys.executable or "/.local/share/pipx/" in sys.executable
+    if is_pipx:
+        safe_print("Detected pipx installation. Updating via pipx...")
+        try:
+            subprocess.run(["pipx", "upgrade", "sutra-cli"], check=True)
+            safe_print("Successfully updated via pipx.")
+        except Exception as exc:
+            safe_print(f"Pipx update failed: {exc}")
+        return
+
+    # 3. Default to pip update.
+    safe_print("Updating via pip...")
+    cmd = [sys.executable, "-m", "pip", "install", "--upgrade", "sutra-cli"]
+    
+    # Check for PEP 668 externally managed environment.
+    if sys.platform == "darwin" or os.path.exists("/etc/os-release"):
+        cmd.append("--break-system-packages")
+        
+    try:
+        subprocess.run(cmd, check=True)
+        safe_print("Successfully updated via pip.")
+    except Exception as exc:
+        safe_print(f"Pip update failed: {exc}")
+        safe_print("\nTip: If you are on macOS, we recommend using 'pipx upgrade sutra-cli' or 'brew install pipx' if you haven't yet.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sutra", description="Sutra: governed AI coding flow for Codex/Gemini and Claude Code")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1234,6 +1275,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("init", help="Initialize Sutra files in the current repo")
     p.add_argument("--force", action="store_true", help="Refresh templates/config")
     p.set_defaults(func=init_project)
+
+    p = sub.add_parser("update", help="Update Sutra CLI to the latest version")
+    p.set_defaults(func=update_command)
 
     p = sub.add_parser("doctor", help="Validate Codex/Gemini and Claude Code chain")
     p.add_argument("--engine", choices=["codex", "gemini"], default=None)
