@@ -727,8 +727,9 @@ def plan_command(args: argparse.Namespace) -> None:
         safe_print("Planner did not return valid task JSON. Using Sutra local fallback planner.")
         parsed = local_fallback_plan(requirement)
 
-    plan = normalize_plan(parsed, run_id, "stdin" if args.input == "-" else str(req_path), engine, requirement)
-    write_json(run_path / "task-plan.json", plan)
+    parsed = normalize_plan(parsed, run_id, "stdin" if args.input == "-" else str(req_path), engine, requirement)
+    write_json(run_path / "task-plan.json", parsed)
+    update_state_file(run_id, "Plan Generated", "planned", f"sutra validate --run {run_id}")
     write_json(run_path / "progress.json", {"run_id": run_id, "events": [], "updated_at": now_iso()})
     write_json(run_path / "token-ledger.json", {"run_id": run_id, "tasks": [], "updated_at": now_iso()})
 
@@ -875,6 +876,7 @@ def validate_command(args: argparse.Namespace) -> None:
 
     safe_print(f"Validation passed for run {args.run}.")
     show_tasks(plan, title="Validated tasks")
+    update_state_file(args.run, "Validated", "planned", f"sutra approve --run {args.run}")
     safe_print(f"\nNext: sutra approve --run {args.run}")
 
 
@@ -883,6 +885,7 @@ def approve_command(args: argparse.Namespace) -> None:
     plan["approved"] = True
     plan["approved_at"] = now_iso()
     write_json(run_path / "task-plan.json", plan)
+    update_state_file(args.run, "Approved", "approved", f"sutra run --run {args.run}")
     safe_print(f"Approved run {args.run}.")
     safe_print(f"Next: sutra run --run {args.run}")
 
@@ -1296,6 +1299,7 @@ def run_command_main(args: argparse.Namespace) -> None:
     plan["status"] = "completed" if not args.dry_run else "dry-run"
     plan["completed_at"] = now_iso()
     write_json(run_path / "task-plan.json", plan)
+    update_state_file(run_id, "Run Completed", plan["status"], "sutra start")
     safe_print(f"\nRun {run_id} finished with status: {plan['status']}")
     summarize_run(run_id)
     safe_print(f"Next: sutra dashboard OR sutra summarize --run {run_id}")
@@ -1581,6 +1585,57 @@ def tokens_report_command(args: argparse.Namespace) -> None:
     safe_print("\nNote: Tokens saved are estimated against Sutra's configured baseline multiplier unless Claude usage data is available in output.")
 
 
+def update_state_file(run_id: str, last_action: str, status: str, next_step: str) -> None:
+    state_file = cwd() / "SUTRA_STATE.md"
+    content = f"""# Sutra Current State
+**Active Run:** {run_id}
+**Status:** {status}
+**Last Action:** {last_action}
+**Next Step:** `{next_step}`
+
+---
+*Last updated: {now_iso()}*
+"""
+    state_file.write_text(content, encoding="utf-8")
+
+
+def next_command(args: argparse.Namespace) -> None:
+    ensure_initialized()
+    run_id = get_latest_run_id()
+    
+    if not run_id:
+        safe_print("No active run found. Starting a new task wizard...")
+        start_command(args)
+        return
+
+    run_path, plan = load_plan(run_id)
+    status = plan.get("status", "planned")
+    approved = plan.get("approved", False)
+
+    safe_print(f"Current Run: {run_id} [Status: {status}]")
+
+    if status == "planned":
+        safe_print("Next logical step: Validating the plan.")
+        validate_command(argparse.Namespace(run=run_id))
+    elif status == "validated" or (status == "planned" and not approved):
+        # The logic in validate_command doesn't currently update status to "validated"
+        # Let's check approved flag
+        if not approved:
+            safe_print("Next logical step: Approving the plan.")
+            approve_command(argparse.Namespace(run=run_id))
+        else:
+            safe_print("Next logical step: Running the tasks.")
+            run_command_main(argparse.Namespace(run=run_id, input=None, engine=None, yes=False, auto_approve=False, skip_doctor=True, smoke_test=False, strict_planner=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=True))
+    elif status == "running" or status == "blocked":
+        safe_print("Resuming current run.")
+        resume_command(argparse.Namespace(run=run_id, yes=False, auto_approve=False, skip_doctor=True, smoke_test=False, dry_run=False, rerun_completed=False, no_git_commit=False, step=True))
+    elif status == "completed":
+        safe_print("Current run is completed. Opening dashboard.")
+        dashboard_command(argparse.Namespace(port=8080))
+    else:
+        safe_print(f"Unknown status '{status}'. Try running 'sutra status --run {run_id}' for details.")
+
+
 def start_command(args: argparse.Namespace) -> None:
     ensure_initialized()
     cfg = load_config()
@@ -1726,6 +1781,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("start", help="Interactive wizard to start a new task")
     p.set_defaults(func=start_command)
+
+    p = sub.add_parser("next", help="Automatically execute the next step in the current run")
+    p.set_defaults(func=next_command)
 
     p = sub.add_parser("update", help="Update Sutra CLI to the latest version")
     p.set_defaults(func=update_command)
