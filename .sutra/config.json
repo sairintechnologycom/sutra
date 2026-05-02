@@ -13,6 +13,11 @@
     "planner_timeout_seconds": 120,
     "allow_local_fallback": true
   },
+  "git": {
+    "auto_branch": true,
+    "auto_commit": true,
+    "branch_prefix": "sutra/"
+  },
   "policy": {
     "require_confirmation_before_run": true,
     "max_timeout_seconds": 1800,
@@ -31,8 +36,9 @@
       "yarn lint",
       "git diff",
       "git status",
-      "ls",
-      "cat"
+      "test ",
+      "grep ",
+      "ls "
     ],
     "deny_command_patterns": [
       "rm -rf",
