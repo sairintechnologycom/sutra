@@ -437,6 +437,7 @@ def doctor(args: argparse.Namespace, *, quiet: bool = False) -> bool:
         safe_print(render_table(["Check", "Status", "Detail"], rows))
         if all_ok:
             safe_print(f"\nCHAIN CONFIRMED: {engine} -> Sutra -> Claude Code")
+            safe_print("Next: sutra plan --input requirements/REQ-001.md")
         else:
             safe_print("\nChain not ready. Fix failed checks before running Sutra automation.")
     return all_ok
@@ -853,6 +854,7 @@ def validate_command(args: argparse.Namespace) -> None:
 
     safe_print(f"Validation passed for run {args.run}.")
     show_tasks(plan, title="Validated tasks")
+    safe_print(f"\nNext: sutra approve --run {args.run}")
 
 
 def approve_command(args: argparse.Namespace) -> None:
@@ -861,6 +863,7 @@ def approve_command(args: argparse.Namespace) -> None:
     plan["approved_at"] = now_iso()
     write_json(run_path / "task-plan.json", plan)
     safe_print(f"Approved run {args.run}.")
+    safe_print(f"Next: sutra run --run {args.run}")
 
 
 def build_claude_prompt(plan: Dict[str, Any], task: Dict[str, Any]) -> str:
@@ -1263,6 +1266,7 @@ def run_command_main(args: argparse.Namespace) -> None:
     write_json(run_path / "task-plan.json", plan)
     safe_print(f"\nRun {run_id} finished with status: {plan['status']}")
     summarize_run(run_id)
+    safe_print(f"Next: sutra dashboard OR sutra summarize --run {run_id}")
 
 
 def status_command(args: argparse.Namespace) -> None:
