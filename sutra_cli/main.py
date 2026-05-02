@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import glob
 import http.server
 import json
@@ -1585,9 +1586,56 @@ def update_command(args: argparse.Namespace) -> None:
         safe_print("\nTip: If you are on macOS, we recommend using 'pipx upgrade sutra-cli' or 'brew install pipx' if you haven't yet.")
 
 
+class SutraArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        # Find close matches for subcommands or options
+        suggestion = ""
+        words = message.split()
+        
+        # Check for invalid choice errors
+        if "invalid choice: " in message:
+            invalid_choice = re.search(r"invalid choice: '([^']+)'", message)
+            if invalid_choice:
+                choice = invalid_choice.group(1)
+                # Look for subcommands in the subparsers
+                for action in self._actions:
+                    if isinstance(action, argparse._SubParsersAction):
+                        matches = difflib.get_close_matches(choice, action.choices.keys(), n=1, cutoff=0.6)
+                        if matches:
+                            suggestion = f"\n\nDid you mean: {matches[0]}?"
+                            break
+        
+        # Check for unrecognized arguments
+        elif "unrecognized arguments: " in message:
+            unrecognized_part = message.split("unrecognized arguments: ")[1]
+            unrecognized = unrecognized_part.split()
+            
+            potential_flags = []
+            for action in self._actions:
+                potential_flags.extend(action.option_strings)
+            
+            # If we are in a sub-parser, also look at parent parser flags if any
+            # But more importantly, if we missed flags, it might be because they are in sub-parsers
+            # that we haven't traversed. For now, let's just make sure we capture all from current.
+            
+            suggestions = []
+            for arg in unrecognized:
+                if arg.startswith("-"):
+                    matches = difflib.get_close_matches(arg, potential_flags, n=1, cutoff=0.6)
+                    if matches:
+                        suggestions.append(f"{arg} -> {matches[0]}")
+            
+            if suggestions:
+                suggestion = f"\n\nDid you mean:\n  " + "\n  ".join(suggestions)
+
+        sys.stderr.write(f"{self.prog}: error: {message}{suggestion}\n")
+        self.exit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="sutra", description="Sutra: governed AI coding flow for Codex/Gemini and Claude Code")
+    parser = SutraArgumentParser(prog="sutra", description="Sutra: governed AI coding flow for Codex/Gemini and Claude Code")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub._parser_class = SutraArgumentParser # Ensure sub-parsers use our custom class
 
     p = sub.add_parser("init", help="Initialize Sutra files in the current repo")
     p.add_argument("--force", action="store_true", help="Refresh templates/config")
@@ -1664,6 +1712,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tokens", help="Token ledger commands")
     token_sub = p.add_subparsers(dest="tokens_command", required=True)
+    token_sub._parser_class = SutraArgumentParser # Ensure token sub-parsers also use it
     tr = token_sub.add_parser("report", help="Show token saving report")
     tr.add_argument("--run", required=True)
     tr.set_defaults(func=tokens_report_command)
