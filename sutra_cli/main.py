@@ -172,6 +172,8 @@ def run_command(
     cwd_path: Optional[Path] = None,
     capture: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    # Use DEVNULL for stdin if no input_text is provided to prevent hanging on interactive prompts
+    stdin = subprocess.PIPE if input_text else subprocess.DEVNULL
     return subprocess.run(
         args,
         input=input_text,
@@ -180,6 +182,7 @@ def run_command(
         capture_output=capture,
         timeout=timeout,
         check=False,
+        stdin=stdin
     )
 
 
