@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 APP_DIR = ".sutra"
 RUNS_DIR = "runs"
 CONFIG_FILE = "config.json"
-VERSION = "0.3.4"
+VERSION = "0.3.5"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "default_engine": "codex",
@@ -600,8 +600,12 @@ def run_planner(engine: str, prompt: str, cfg: Dict[str, Any]) -> Tuple[Optional
         ok, err = validate_plan_schema(parsed)
         if ok:
             return parsed, raw, ""
+        safe_print(f"  [DEBUG] Schema validation failed: {err}")
         return None, raw, f"Planner output failed schema validation: {err}"
     
+    # If parsing failed, show a snippet of the raw output for debugging
+    snippet = raw.strip()[:200] + "..." if len(raw) > 200 else raw.strip()
+    safe_print(f"  [DEBUG] JSON extraction failed. Raw output snippet: {snippet}")
     return None, raw, "Planner output did not contain a valid Sutra task plan JSON."
 
 
