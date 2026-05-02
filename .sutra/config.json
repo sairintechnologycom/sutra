@@ -1,0 +1,48 @@
+{
+  "default_engine": "codex",
+  "claude": {
+    "command": "claude",
+    "default_model": "sonnet",
+    "output_format": "json",
+    "pass_budget_flag": true,
+    "default_max_budget_usd": 0.5
+  },
+  "planner": {
+    "codex_command": "codex",
+    "gemini_command": "gemini",
+    "planner_timeout_seconds": 120,
+    "allow_local_fallback": true
+  },
+  "policy": {
+    "require_confirmation_before_run": true,
+    "max_timeout_seconds": 1800,
+    "max_turns": 6,
+    "validation_timeout_seconds": 300,
+    "token_baseline_multiplier": 1.5,
+    "allow_validation_command_prefixes": [
+      "pytest",
+      "python -m pytest",
+      "npm test",
+      "npm run test",
+      "npm run lint",
+      "pnpm test",
+      "pnpm lint",
+      "yarn test",
+      "yarn lint",
+      "git diff",
+      "git status",
+      "ls",
+      "cat"
+    ],
+    "deny_command_patterns": [
+      "rm -rf",
+      "sudo",
+      "curl .*\\| sh",
+      "wget .*\\| sh",
+      "terraform apply",
+      "kubectl delete",
+      "az .* delete",
+      "aws .* delete"
+    ]
+  }
+}

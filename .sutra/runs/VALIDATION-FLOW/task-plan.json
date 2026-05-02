@@ -1,0 +1,147 @@
+{
+  "run_id": "VALIDATION-FLOW",
+  "title": "Add Student Progress Dashboard",
+  "engine": "gemini",
+  "requirement_file": "examples/REQ-001.md",
+  "requirement_excerpt": "# Requirement: Add Student Progress Dashboard\n\n## Goal\nBuild a dashboard that shows progress by subject, topic, quiz score, and mastery level.\n\n## Expected Outcome\n- Dashboard page created\n- API endpoint added if required\n- Tests added\n- Existing tests pass\n\n## Constraints\n- Use existing frontend layout\n- Do not introduce a new UI library\n- Do not change authentication flow\n\n## Validation\n- npm test passes\n- npm run lint passes\n",
+  "risk": "medium",
+  "status": "planned",
+  "approved": false,
+  "created_at": "2026-05-02T02:17:40.899874+00:00",
+  "planner_fallback": false,
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Inspection and Architecture Discovery",
+      "status": "pending",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 600,
+      "max_turns": 4,
+      "max_budget_usd": 0.25,
+      "allowed_tools": [
+        "Bash",
+        "Read"
+      ],
+      "validation_commands": [
+        "ls src/",
+        "grep -r \"layout\" src/"
+      ],
+      "success_criteria": [
+        "Identified existing frontend layout components and routing system.",
+        "Mapped data structures for student progress (subjects, topics, quiz scores, mastery).",
+        "Identified API patterns used for data fetching in the existing dashboard."
+      ],
+      "context_files": [
+        "CLAUDE.md",
+        "docs/decisions.md"
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "Implement Progress API Endpoints",
+      "status": "pending",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 900,
+      "max_turns": 6,
+      "max_budget_usd": 0.5,
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Write"
+      ],
+      "validation_commands": [
+        "npm test src/api/progress"
+      ],
+      "success_criteria": [
+        "New API endpoint created to serve aggregated student progress data.",
+        "Data returned includes subject-wise scores and mastery levels.",
+        "API implementation adheres to existing project patterns and auth constraints.",
+        "Unit tests for the new endpoint pass."
+      ],
+      "context_files": [
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "Implement Dashboard UI and Integration",
+      "status": "pending",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 1200,
+      "max_turns": 6,
+      "max_budget_usd": 0.75,
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Write"
+      ],
+      "validation_commands": [
+        "npm run lint"
+      ],
+      "success_criteria": [
+        "Dashboard page created using the existing frontend layout.",
+        "Progress data displayed by subject, topic, and mastery level.",
+        "No new UI libraries introduced; strictly used existing styles.",
+        "Frontend correctly fetches and displays data from the new API."
+      ],
+      "context_files": [
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Verification and Compliance Check",
+      "status": "pending",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 600,
+      "max_turns": 4,
+      "max_budget_usd": 0.3,
+      "allowed_tools": [
+        "Bash",
+        "Read"
+      ],
+      "validation_commands": [
+        "npm test",
+        "npm run lint"
+      ],
+      "success_criteria": [
+        "All new and existing tests pass (npm test).",
+        "Linter checks pass without errors (npm run lint).",
+        "Verified that authentication flow remains unchanged."
+      ],
+      "context_files": [
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "Documentation and Progress Update",
+      "status": "pending",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 300,
+      "max_turns": 2,
+      "max_budget_usd": 0.15,
+      "allowed_tools": [
+        "Bash",
+        "Read",
+        "Write"
+      ],
+      "validation_commands": [
+        "cat docs/progress.md"
+      ],
+      "success_criteria": [
+        "Updated docs/progress.md with details of the new dashboard and API.",
+        "Ensured all implemented features are reflected in the progress tracking."
+      ],
+      "context_files": [
+        "CLAUDE.md",
+        "docs/progress.md"
+      ]
+    }
+  ]
+}

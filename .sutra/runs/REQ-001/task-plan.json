@@ -1,0 +1,154 @@
+{
+  "run_id": "REQ-001",
+  "title": "Add Student Progress Dashboard",
+  "engine": "gemini",
+  "requirement_file": "examples/REQ-001.md",
+  "requirement_excerpt": "# Requirement: Add Student Progress Dashboard\n\n## Goal\nBuild a dashboard that shows progress by subject, topic, quiz score, and mastery level.\n\n## Expected Outcome\n- Dashboard page created\n- API endpoint added if required\n- Tests added\n- Existing tests pass\n\n## Constraints\n- Use existing frontend layout\n- Do not introduce a new UI library\n- Do not change authentication flow\n\n## Validation\n- npm test passes\n- npm run lint passes\n",
+  "risk": "medium",
+  "status": "dry-run",
+  "approved": true,
+  "created_at": "2026-05-02T02:05:12.707852+00:00",
+  "planner_fallback": false,
+  "tasks": [
+    {
+      "id": "T001",
+      "title": "Inspect codebase for UI/API patterns and data models",
+      "status": "dry-run",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 300,
+      "max_turns": 3,
+      "max_budget_usd": 0.25,
+      "allowed_tools": [
+        "Read",
+        "Bash",
+        "Grep",
+        "Ls"
+      ],
+      "validation_commands": [
+        "ls src/api",
+        "ls src/components"
+      ],
+      "success_criteria": [
+        "Identified existing layout components to wrap the dashboard.",
+        "Identified location and pattern for new API endpoints.",
+        "Mapped the data structures for subjects, topics, and scores."
+      ],
+      "context_files": [
+        "CLAUDE.md",
+        "README.md",
+        "docs/progress.md"
+      ]
+    },
+    {
+      "id": "T002",
+      "title": "Implement API endpoint for student progress data",
+      "status": "dry-run",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 600,
+      "max_turns": 5,
+      "max_budget_usd": 0.5,
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Bash",
+        "Grep"
+      ],
+      "validation_commands": [
+        "npm test"
+      ],
+      "success_criteria": [
+        "API endpoint serves progress data including subject, topic, quiz scores, and mastery levels.",
+        "Endpoint follows existing architectural patterns.",
+        "Unit tests for the API endpoint are passing."
+      ],
+      "context_files": [
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T003",
+      "title": "Create Student Progress Dashboard UI component",
+      "status": "dry-run",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 900,
+      "max_turns": 6,
+      "max_budget_usd": 0.75,
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Bash",
+        "Grep"
+      ],
+      "validation_commands": [
+        "npm run lint"
+      ],
+      "success_criteria": [
+        "Dashboard page created using existing frontend layout.",
+        "Dashboard displays progress by subject and topic.",
+        "Dashboard displays quiz scores and mastery levels correctly.",
+        "No new UI libraries introduced."
+      ],
+      "context_files": [
+        "CLAUDE.md"
+      ]
+    },
+    {
+      "id": "T004",
+      "title": "Verify integration and run full test suite",
+      "status": "dry-run",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 600,
+      "max_turns": 4,
+      "max_budget_usd": 0.5,
+      "allowed_tools": [
+        "Read",
+        "Bash"
+      ],
+      "validation_commands": [
+        "npm test",
+        "npm run lint"
+      ],
+      "success_criteria": [
+        "All new and existing tests pass.",
+        "Linting checks pass project-wide.",
+        "Dashboard integration with API is confirmed functional."
+      ],
+      "context_files": [
+        "CLAUDE.md",
+        "docs/progress.md"
+      ]
+    },
+    {
+      "id": "T005",
+      "title": "Update progress documentation and cleanup",
+      "status": "dry-run",
+      "agent": "claude-code",
+      "model": "sonnet",
+      "timeout_seconds": 300,
+      "max_turns": 2,
+      "max_budget_usd": 0.1,
+      "allowed_tools": [
+        "Read",
+        "Write",
+        "Bash"
+      ],
+      "validation_commands": [
+        "cat docs/progress.md"
+      ],
+      "success_criteria": [
+        "docs/progress.md reflects completion of the dashboard.",
+        "Any temporary research files are removed."
+      ],
+      "context_files": [
+        "docs/progress.md"
+      ]
+    }
+  ],
+  "approved_at": "2026-05-02T02:05:46.935641+00:00",
+  "started_at": "2026-05-02T02:05:49.800575+00:00",
+  "completed_at": "2026-05-02T02:05:49.804123+00:00"
+}

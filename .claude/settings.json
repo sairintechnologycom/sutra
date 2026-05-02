@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Read",
+      "Edit",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(pytest *)",
+      "Bash(npm test *)",
+      "Bash(npm run lint *)"
+    ],
+    "deny": [
+      "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(curl * | sh)",
+      "Bash(terraform apply *)",
+      "Bash(kubectl delete *)"
+    ]
+  }
+}
