@@ -747,12 +747,12 @@ def plan_command(args: argparse.Namespace) -> None:
                 subprocess.run(["git", "checkout", branch_name], check=True, capture_output=True)
             else:
                 subprocess.run(["git", "checkout", "-b", branch_name], check=True, capture_output=True)
-            plan["git_branch"] = branch_name
-            write_json(run_path / "task-plan.json", plan)
+            parsed["git_branch"] = branch_name
+            write_json(run_path / "task-plan.json", parsed)
         except Exception as exc:
             safe_print(f"Warning: Failed to create/checkout git branch {branch_name}: {exc}")
 
-    show_tasks(plan, title=f"Generated Sutra task plan: {run_id}")
+    show_tasks(parsed, title=f"Generated Sutra task plan: {run_id}")
     
     # If we read from stdin, we likely can't do interactive confirmation if piped.
     is_interactive = sys.stdin.isatty()
@@ -761,11 +761,11 @@ def plan_command(args: argparse.Namespace) -> None:
         pass 
     else:
         if is_interactive and confirm("Interactive plan editing?", assume_yes=False):
-            interactive_edit_plan(plan)
-            write_json(run_path / "task-plan.json", plan)
+            interactive_edit_plan(parsed)
+            write_json(run_path / "task-plan.json", parsed)
 
     safe_print(f"\nPlan saved: {run_path / 'task-plan.json'}")
-    if plan.get("planner_fallback"):
+    if parsed.get("planner_fallback"):
         safe_print("Note: local fallback planner was used. Run with --strict-planner to require Codex/Gemini JSON output.")
     
     safe_print("\n🚀 Next Steps (The Sutra Roadmap):")
