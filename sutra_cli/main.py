@@ -1552,6 +1552,53 @@ def tokens_report_command(args: argparse.Namespace) -> None:
     safe_print("\nNote: Tokens saved are estimated against Sutra's configured baseline multiplier unless Claude usage data is available in output.")
 
 
+def start_command(args: argparse.Namespace) -> None:
+    ensure_initialized()
+    cfg = load_config()
+    safe_print("🚀 Welcome to Sutra! Let's start your new task.")
+    
+    # 1. Ask for Task Name
+    run_id = input("\n1. What is the name of this task? (e.g. ADD-AUTH): ").strip()
+    if not run_id:
+        run_id = f"RUN-{datetime.now().strftime('%m%d-%H%M')}"
+        safe_print(f"   (No name provided, using generated ID: {run_id})")
+    run_id = slugify(run_id)
+
+    # 2. Ask for Requirement Source
+    safe_print("\n2. How would you like to provide the requirement?")
+    safe_print("   [1] Paste text (from clipboard/design doc)")
+    safe_print("   [2] Provide path to a Markdown file")
+    choice = input("Choice [1/2]: ").strip()
+
+    input_source = "-"
+    if choice == "2":
+        input_source = input("   Path to file: ").strip()
+        if not Path(input_source).exists():
+            safe_print(f"   Error: File {input_source} not found. Falling back to paste mode.")
+            input_source = "-"
+
+    # 3. Ask for Engine (or use default)
+    engine = cfg.get("default_engine", "codex")
+    safe_print(f"\n3. Which planning engine should I use? (default: {engine})")
+    custom_engine = input(f"   Press Enter for {engine}, or type [gemini/codex]: ").strip().lower()
+    if custom_engine in {"gemini", "codex"}:
+        engine = custom_engine
+
+    # 4. Confirm and Run Plan
+    safe_print(f"\nReady! Running: sutra plan --input {input_source} --engine {engine} --run-id {run_id}")
+    
+    # Construct args for plan_command
+    plan_args = argparse.Namespace(
+        input=input_source,
+        engine=engine,
+        run_id=run_id,
+        strict_planner=False,
+        no_git_branch=False
+    )
+    
+    plan_command(plan_args)
+
+
 def update_command(args: argparse.Namespace) -> None:
     safe_print("Checking for updates...")
     
@@ -1647,6 +1694,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("init", help="Initialize Sutra files in the current repo")
     p.add_argument("--force", action="store_true", help="Refresh templates/config")
     p.set_defaults(func=init_project)
+
+    p = sub.add_parser("start", help="Interactive wizard to start a new task")
+    p.set_defaults(func=start_command)
 
     p = sub.add_parser("update", help="Update Sutra CLI to the latest version")
     p.set_defaults(func=update_command)
