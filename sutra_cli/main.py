@@ -751,7 +751,12 @@ def plan_command(args: argparse.Namespace) -> None:
     safe_print(f"\nPlan saved: {run_path / 'task-plan.json'}")
     if plan.get("planner_fallback"):
         safe_print("Note: local fallback planner was used. Run with --strict-planner to require Codex/Gemini JSON output.")
-    safe_print("Next: sutra validate --run " + run_id)
+    
+    safe_print("\n🚀 Next Steps (The Sutra Roadmap):")
+    safe_print(f"  1. Validate: sutra validate --run {run_id}")
+    safe_print(f"  2. Approve:  sutra approve --run {run_id}")
+    safe_print(f"  3. Run:      sutra run --run {run_id} --step")
+    safe_print(f"  4. Monitor:  sutra dashboard")
 
 
 def load_plan(run_id: str) -> Tuple[Path, Dict[str, Any]]:
