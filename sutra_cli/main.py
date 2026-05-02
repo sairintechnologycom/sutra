@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 APP_DIR = ".sutra"
 RUNS_DIR = "runs"
 CONFIG_FILE = "config.json"
-VERSION = "0.3.6"
+VERSION = "0.3.7"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "default_engine": "codex",
